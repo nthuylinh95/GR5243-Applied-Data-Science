@@ -1,0 +1,816 @@
+---
+title: "Applied Data Science:  Midterm Project"
+author: "Caffrey Lee(cl3802), Nguyen Thuy Linh(tn2382), Chengyue Meng(cm3769)"
+date: "14 March 2019"
+output:
+  prettydoc::html_pretty:
+  theme: cayman
+highlight: github
+---
+
+```{r setup, include=FALSE}
+set.seed(72)
+knitr::opts_chunk$set(echo = TRUE, comment="", warning = FALSE, message = FALSE, tidy.opts=list(width.cutoff=55))
+```
+
+```{r libraries, echo = FALSE}
+library(data.table)
+library(DT)
+library(R.filesets)
+library(glmnet)
+library(class)
+library(nnet)
+library(randomForest)
+library(rpart)
+library(caret)
+library(e1071)
+```
+
+```{r source_files}
+train.set <- "~/Documents/2019 Spring/5243 Applied DS/MNIST-fashion training set-49.csv"
+test.set <- "~/Documents/2019 Spring/5243 Applied DS/MNIST-fashion testing set-49.csv"
+```
+
+```{r functions}
+sampling <- function(x,value){
+  x[sample(x = 1:x[,.N], size = value, replace = FALSE),]
+}
+
+round.numerics <- function(x, digits){
+  if(is.numeric(x)){
+    x <- round(x = x, digits = digits)
+  }
+  return(x)
+}
+
+create.x.and.y <- function(the.formula, data) {
+    require(data.table)
+    setDT(data)
+    x <- model.matrix(object = as.formula(the.formula), 
+        data = data)
+    y.name <- trimws(x = gsub(pattern = "`", replacement = "", 
+        x = strsplit(x = the.formula, split = "~")[[1]][1], 
+        fixed = TRUE))
+    y <- data[as.numeric(rownames(x)), get(y.name)]
+    return(list(x = x, y = y))
+}
+
+
+iteration.function <- function(model.name){
+  for (j in 1:3){
+    for (i in 1:iterations){
+      size <- n.values[j]
+      data.name <- sprintf("%s_%d_%d","dat",size,i)
+      results <- model.name(size = size, data.name = data.name)
+      tab <- as.data.table(rbind(tab,results))
+    }
+  }
+  return(tab)
+}
+
+min.1 <- function(x){
+  return(min(x/60,1))
+}
+
+scoring <- function(model.name,weights = c(0.25,0.25,0.5)){
+  tab <- get(sprintf("%s.%s","tab",model.name))
+  tab2 <- data.table(Model = tab[,Model],
+                     Sample.Size = tab[,Sample.Size],
+                     Data = tab[,Data],
+                     A = round.numerics(tab[,Sample.Size/n.train],digits = digits),
+                     B = round.numerics(sapply(tab[,Running.time],min.1), digits = digits),
+                     C = round.numerics(tab[,Prediction.error],digits= digits))
+  tab2 <- tab2[,Score := round.numerics(weights[1]*A + weights[2]*B + weights[3]*C,digits= digits)]
+  return(tab2)
+}
+
+score.avg <- function(model.name){
+  tab <- get(sprintf("%s.%s","score",model.name))
+  variables <- c("A","B","C","Score")
+  by.vars <- c("Model","Sample.Size")
+  tab2 <- tab[,lapply(X = .SD, FUN = mean),.SDcols = variables,
+                   by=by.vars]
+  tab2 <- tab2[,lapply(X = .SD, FUN = round.numerics, digits = digits)]
+  return(tab2) 
+}
+
+vote <- function(x){
+  if (length(unique(table(x)))!=1){
+  most <- names(which.max(table(x))) 
+  } else {
+    most <- x[1]
+  }
+  return(most)
+}
+
+re.weight <- function(tab,weights){
+  tab <- tab[,.(Model, Sample.Size,A, B, C)]
+  tab <- tab[,Score := weights[1]*A + weights[2]*B + weights[3]*C]
+    return(tab)
+}
+```
+
+```{r constants}
+options(expressions = 500000)
+n.values <- c(520, 777, 1818)
+iterations <- 3
+digits <- 4
+label.name <- "label"
+```
+
+```{r load_data}
+train <- fread(input = train.set)
+test <- fread(input = test.set)
+```
+
+
+Briefly talking about the cleaning data, we found that the dataset itself is very clean, meaning that it does not have any negative values, missing values, and erroneous values, anything beyond 0 and 255. In addition, we checked if the apparels that we are going to train on are same as the one we are going to test, or predict because we thought that if we get any other apparels beside the ones that we had trained on, then the models could not predict or the prediction would be very bad. 
+
+
+```{r clean_data}
+#check for "Bad Apple" : both seems good, saying that they do not have any bad apples
+train.bad.apple = train[, lapply(.SD, FUN = is.numeric), .SDcols = names(train[,-1])]
+test.bad.apple = test[, lapply(.SD, FUN = is.numeric), .SDcols = names(test[,-1])]
+
+sum(train.bad.apple == FALSE)
+sum(test.bad.apple == FALSE)
+
+#check fro missing value : both clean with missing values
+sum(is.na(train))
+sum(is.na(test))
+
+#check for erronous values out of [0,255] : so far the data is clean! no errornous val
+sum(train[,-1]<0 | train[,-1]>255)
+sum(test[,-1]<0 | test[,-1]>255)
+
+#check if the dependant variable for both train and test is well-match.
+train_uniq<- unique(train[,1])
+test_uniq <- unique(test[,1])
+
+sum(train_uniq != test_uniq)
+
+## side note: if we get any other clothes category outside of the train and test_uniq values, we cannot guarantee that the result will be as good as we get from the project since it is not trained with it. 
+```
+
+
+
+```{r generate_samples}
+#Generating samples 
+n.train = nrow(train)
+sample_datasets = c()
+  for (i in n.values){
+    for (j in 1:iterations){
+      sample = sampling(train,i)
+      name = sprintf("%s_%d_%d", "dat", i, j)
+      assign(name, sample)
+      sample_datasets = append(sample_datasets,name)
+    }
+  }
+
+sample_datasets
+sample.dt <- data.table("Sample Size" = n.values,
+             "First Random Sample" = sample_datasets[c(1,4,7)],
+             "Second Random Sample" = sample_datasets[c(2,5,8)],
+             "Third Random Sample" = sample_datasets[c(3,6,9)])
+
+datatable(sample.dt)
+```
+
+### Introduction 
+
+Like the theme of this project, grand tour of machine learning, this midterm project contains 10 different machine learning models to predict a type of apparel, including `train_uniq`. Besides the accuracy of the prediction, this project also emphasizes on the running time and the sample size. 
+The dataset contains a set of images for different types of clothing, a training set of 60,000 examples and a test set of 10,000 examples. Because we need to build 10 different models, including ensemble one, and run on 9 different sample datasets, this project only uses data that subdivided into 49 pixels (7 x7). 
+Regarding sample dataset, we selected random numbers (520, 777, and 1818) for the size of each sample; and, each sample size was iterated to generate 3 different samples with the given size, combining them all to be 9 sample datasets. 
+For each sample, we applied the following 10 models to generate the predictive classification results.
+
+1.	Generalized Boosted Regression Models - XGboost
+2.	Support Vector Machines (SVM)
+3.	Multinomial logistic regression
+4.	K-Nearest Neighbors (K = 5)
+5.	K-Nearest Neighbors (K = 10)
+6.	Ridge Regression
+7.	Lasso Regression
+8.	Classification Tree
+9.	Random Forest
+10.	Ensemble model
+
+Each model is scored by 3 factors: proportion of the sample size (A), running time (B), and prediction accuracy (C), and they were weighted by 0.25 for A, 0.25 for B, and 0.50 for C. Based on the score, we made some comparisons among the models and selected “best” model for this project.
+
+
+### Model 1: Generalized Boosted Regression Models - XGBoost
+
+When making a choice between two gradient boosting models, GBM and XGboost, we decided to move on with XGboost. As far as we know, XGboost is less susceptible to overfitting than GBM because it uses more regularized formalization. As expected, it took very long time to get the result, but still faster than GBM did, it gave us best prediction accuracy among the individual models. With the respect of  reducing the running time as much as possible, we selected 4 for cross validation. 
+
+```{r code_model1_development, eval = FALSE}
+
+library(caret)
+#create function for Classification Tree
+xgboost.model <- function (size, data.name){
+  set.seed(72)
+  
+  # Setting starting time
+  t1 <- Sys.time()
+  
+  # Training the model
+  xgb <- train(as.factor(label)~., 
+               data = get(data.name), 
+               method = "xgbTree",
+               trControl = trainControl("cv", number = 4))
+  
+  # Predicting
+  pred <- predict(object = xgb, newdata = test, type="raw")
+  
+  # Ending time
+  t2 <- Sys.time()
+  
+  running.time <- as.numeric(t2-t1, units = 'secs')
+  error <- mean(pred != test$label)
+  
+  # Scoring Criterion
+  results <- data.frame(Model = "xgboost",
+                               `Sample Size` = size,
+                               Data = data.name,
+                               Running.time = running.time,
+                               `Prediction error` = error
+                               )
+                        
+                        
+  return(results)
+}
+
+# Deleting previous table(s)
+tab <- NULL
+
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+tab.xgb <- iteration.function(xgboost.model)
+
+# Displaying the results
+score.xgb <- scoring("xgb")
+score.xgb.avg <- score.avg("xgb")
+score.xgb
+
+# Save data
+saveRDS(score.xgb, "xgb")
+saveRDS(score.xgb.avg, "xgb_avg")
+```
+
+```{r load_model1}
+datatable(loadRDS("xgb"))
+datatable(loadRDS("xgb_avg"))
+```
+
+### Model 2: Support Vector Machines      
+
+Another machine learning model we picked is SVM. We thought that it would be a great model for this project, since it is very flexible on drawing a dividing line, i.e., separating the gray marks and white mark. Besides, it generally performs better than tree models especially when the data is sparse, now we have 7*7.  At first, we thought that setting the parameter, kernel equals to 'radial' because of when our data is about predicting the shape of clothes such as dress, T-shirts, etc. Yet, the result was worse than not tuning the parameter. From this, we learned that we should be careful about setting the parameter. 
+
+```{r code_model2_development, eval = FALSE}
+
+library(e1071)
+set.seed(72)
+pred.mat.svm <- NULL
+
+svm.model <- function(size, data.name){
+  # Setting starting time
+  t1 <- Sys.time()
+  
+  # Training the model
+  svm <- svm(as.factor(label)~., data = get(data.name), type = 'C-classification')
+  
+  # Predicting
+  pred <- predict(object = svm, newdata = test, type = "class")
+  
+  # Ending time
+  t2 <- Sys.time()
+  
+  running.time <- as.numeric(t2-t1, units = 'secs')
+  error <- mean(pred != test$label)
+  
+  # Model summary
+  results <- data.frame(Model = "svm",
+                               `Sample Size` = size,
+                               Data = data.name,
+                               Running.time = running.time,
+                               `Prediction error` = error
+                               )
+   pred.mat.svm <<- cbind(pred.mat.svm,as.character(pred))
+  
+  return(results)                   
+}
+
+# Deleting Previous tab
+tab <- NULL
+# Running the function for 3 different sample sizes and 3 iterations for each size
+tab.svm <- iteration.function(model.name = svm.model)
+
+# Displaying the results
+score.svm <- scoring("svm")
+score.svm.avg <- score.avg("svm")
+datatable(score.svm)
+datatable(score.svm.avg)
+# Save data
+saveRDS(score.svm, "svm")
+saveRDS(score.svm.avg, "svm_avg")
+```
+
+```{r load_model2}
+datatable(loadRDS('svm'))
+datatable(loadRDS('svm_avg'))
+```
+
+
+
+### Model 3: Multinomial Logistic Regression    
+
+The advantages of this method include getting probabilities associated with each observation, and efficiency in terms of time and memory requirement. The cons is that this method requires large sample size to achieve stable results. For instance, the C component of the score, which is the proportion of the predictions on the testing set that are incorrectly classified, is lowest for the highest sample size.
+
+```{r code_model3_development, eval = FALSE}
+pred.mat.log <- NULL
+logistic.model <- function(size,data.name){
+         library(nnet)
+         # Setting starting time
+         t1 <- Sys.time()
+         
+         # Training the model
+         model <- multinom(formula = as.factor(label) ~ ., data = get(data.name))
+         
+         # Predicting
+         pred <- predict(object = model, newdata = test, type = "class")
+         
+         # Ending time
+         t2 <- Sys.time()
+     
+         running.time <- as.numeric(t2-t1)
+         error <- mean(pred != test$label)
+         
+         # Model summary
+         results <- data.frame(Model = "logistic Regression",
+                               `Sample Size` = size,
+                               Data = data.name,
+                               Running.time = running.time,
+                               `Prediction error` = error
+                               )
+         pred.mat.log <<- cbind(pred.mat.log,as.character(pred))
+         return(results)
+}
+
+# Deleting previous tab
+tab <- NULL
+# Running the function for 3 different sample sizes and 3 iterations for each size:
+tab.log <- iteration.function(logistic.model)
+
+# Displaying the results
+score.log <- scoring("log")
+score.log.avg <- score.avg("log")
+datatable(score.log)
+datatable(score.log.avg)
+# Save data
+saveRDS(score.log, "log")
+saveRDS(score.log.avg, "log_avg")
+```
+
+```{r load_model3}
+# Loading the data
+datatable(loadRDS("log"))
+datatable(loadRDS("log_avg"))
+```
+
+
+### Model 4: K-Nearst Neighbours With K = 5    
+
+One of the biggest issues with KNN is to choose the optimal number of neighbors to be consider. After having experimented with a couple of different values of parameter K, first with K = 10, it was found that K = 5 and K = 10 as chosed for Model 7 give one of the best scores (a number between 5 and 10 would do as well, but we wanted to choose ones with bigger difference). Since the data is quite balanced, the predictions are fairly accurate.      
+
+```{r code_model4_development, eval = FALSE}
+knn5.model <- function(size, data.name){
+         library(class)
+         cl <- get(data.name)[,get(label.name)]
+         # Setting starting time
+         t1 <- Sys.time()
+         
+         # Training the model
+         pred <- knn(train = get(data.name)[,-1], test = test[,-1], cl = cl, k = 5)
+         
+         # Ending time
+         t2 <- Sys.time()
+       
+         running.time <- as.numeric(t2-t1)
+         error <- mean(pred != test$label)
+         
+         # Model summary
+         results <- data.frame(Model = "kNN_5",
+                               `Sample Size` = size,
+                               Data = data.name,
+                               Running.time = running.time,
+                               `Prediction error` = error
+                               )
+         return(results)
+}
+
+
+# Deleting previous tab
+tab <- NULL
+# Running the function for 3 different sample sizes and 3 iterations for each size:
+tab.kNN_5 <- iteration.function(knn5.model)
+
+# Displaying the results
+score.kNN_5 <- scoring("kNN_5")
+score.kNN_5.avg <- score.avg("kNN_5")
+datatable(score.kNN_5)
+datatable(score.kNN_5.avg)
+# Save data
+saveRDS(score.kNN_5, "kNN_5")
+saveRDS(score.kNN_5.avg, "kNN_5_avg")
+```
+
+```{r load_model4}
+# Loading the data
+datatable(loadRDS("kNN_5"))
+datatable(loadRDS("kNN_5_avg"))
+```
+
+### Model 5: K-Nearst Neighbours With K = 10     
+
+As previously mentioned, the model with K = 10 was first tried out and gave better results than K = 3 or K = 20. We added the model with K = 5, as it gave slightly better predictions for all samples (if we wanted to optimize, then we would possibly get different K values for ecah sample, thus we decided to go with relatively optimal ones for all samples). 
+
+```{r code_model5_development, eval = FALSE}
+knn10.model <- function(size, data.name){
+         library(class)
+         cl <- get(data.name)[,get(label.name)]
+         # Setting starting time
+         t1 <- Sys.time()
+         
+         # Training the model
+         pred <- knn(train = get(data.name)[,-1], test = test[,-1], cl = cl, k = 10)
+         
+         # Ending time
+         t2 <- Sys.time()
+         
+         running.time <- as.numeric(t2-t1)
+         error <- mean(pred != test$label)
+         
+         # Model summary
+         results <- data.frame(Model = "kNN_10",
+                               `Sample Size` = size,
+                               Data = data.name,
+                               Running.time = running.time,
+                               `Prediction error` = error
+                               )
+         return(results)
+}
+
+# Deleting previous tab
+tab <- NULL
+# Running the function for 3 different sample sizes and 3 iterations for each size:
+tab.kNN_10 <- iteration.function(knn10.model)
+
+# Displaying the results
+score.kNN_10 <- scoring("kNN_10")
+score.kNN_10.avg <- score.avg("kNN_10")
+datatable(score.kNN_10)
+datatable(score.kNN_10.avg)
+
+# Save data
+saveRDS(score.kNN_10, "kNN_10")
+saveRDS(score.kNN_10.avg, "kNN_10_avg")
+```
+
+```{r load_model5}
+# Loading the data
+datatable(loadRDS("kNN_10"))
+datatable(loadRDS("kNN_10_avg"))
+```
+
+### Model 6: Ridge Regression      
+
+As said in class, ridge regression has very poor predictive performance compared to other methods - we can see that the C component of the score will be around 40-48% of incorrectly predicted entries. This could be caused by the wide variety of levels in the outcome variable. The model is also more time-consuming than, say, KNN, resulting in a relatively high score overall. The lambda parameter for this model is automatically optimalized based on the number of observations, number of variables, as well as the default number of lambda values nlambda = 100.   
+
+```{r code_model6_development, eval = FALSE}
+ridge.model <- function(size, data.name){
+         library(glmnet)
+         # Setting starting time
+         t1 <- Sys.time()
+         
+         # Training the model
+         x.y.train <- create.x.and.y("label~.", data = get(data.name))
+         model <- glmnet(x = x.y.train$x, y = x.y.train$y, family = "multinomial", alpha = 0)
+         
+         # Predicting
+         pred <- predict(object = model, newx = data.matrix(test), type = "class")
+         
+         # Ending time
+         t2 <- Sys.time()
+         
+         running.time <- as.numeric(t2-t1)
+         error <- mean(pred != test$label)
+         
+         # Model summary
+         results <- data.frame(Model = "Ridge regression",
+                               `Sample Size` = size,
+                               Data = data.name,
+                               Running.time = running.time,
+                               `Prediction error` = error
+                               )
+         return(results)
+}
+
+# Deleting previous tab
+tab <- NULL
+# Running the function for 3 different sample sizes and 3 iterations for each size:
+tab.ridge <- iteration.function(ridge.model)
+
+# Displaying the results
+score.ridge <- scoring("ridge")
+score.ridge.avg <- score.avg("ridge")
+datatable(score.ridge)
+datatable(score.ridge.avg)
+
+# Save data
+saveRDS(score.ridge, "ridge")
+saveRDS(score.ridge.avg, "ridge_avg")
+```
+
+```{r load_model6}
+# loading the data
+datatable(loadRDS("ridge"))
+datatable(loadRDS("ridge_avg"))
+```
+
+
+### Model 7: Lasso Regression     
+
+Similarly to ridge regression, lasso regression also has poor predictive performance. This could be caused by the wide variety of levels in the outcome variable. The lambda parameter is optimalized based on data.
+
+```{r code_model7_development, eval = FALSE}
+lasso.model <- function(size, data.name){
+         library(glmnet)
+         # Setting starting time
+         t1 <- Sys.time()
+         
+         # Training the model
+         x.y.train <- create.x.and.y("label~.", data = get(data.name))
+         model <- glmnet(x = x.y.train$x, y = x.y.train$y, family = "multinomial", alpha = 1)
+         
+         # Predicting
+         pred <- predict(object = model, newx = data.matrix(test), type = "class")
+         
+         # Ending time
+         t2 <- Sys.time()
+         
+         running.time <- as.numeric(t2-t1)
+         error <- mean(pred != test$label)
+         
+         # Model summary
+         results <- data.frame(Model = "Lasso regression",
+                               `Sample Size` = size,
+                               Data = data.name,
+                               Running.time = running.time,
+                               `Prediction error` = error
+                               )                  
+         return(results)
+}
+
+# Deleting previous tab
+tab <- NULL
+# Running the function for 3 different sample sizes and 3 iterations for each size:
+tab.lasso <- iteration.function(lasso.model)
+
+# Displaying the results
+score.lasso <- scoring("lasso")
+score.lasso.avg <- score.avg("lasso")
+datatable(score.lasso)
+datatable(score.lasso.avg)
+# Save data
+saveRDS(score.lasso, "lasso")
+saveRDS(score.lasso.avg, "lasso_avg")
+```
+
+```{r load_model7}
+# Loading the data
+datatable(loadRDS("lasso"))
+datatable(loadRDS("lasso_avg"))
+```
+
+### Model 8: Classification Trees     
+
+What classification trees do is to find the best variable and split into branches until some stopping criterion, which effectively partitions the space into different regions. The logic behind is fairly easy to understand but one big problem is that it uses a single best variable and the prection error is generally high. Besides, it tend to rely on the training sets too much, and sentitive to change dramatically even for small changes to original dataset. It also tends to create complex trees so that overfitting problem could emerge, leading to higher error rates.      
+
+```{r code_model8_development, eval = FALSE}
+
+trees.model <- function(size,data.name){
+         library(rpart)
+         # Setting starting time
+         t1 <- Sys.time()
+         
+         # Training the model
+         model <- rpart(formula = as.factor(label)~.,data = get(data.name))
+         
+         # Predicting
+         pred <- predict(object = model,newdata = test,type = "class")
+         
+         # Ending time
+         t2 <- Sys.time()
+         
+         running.time <- as.numeric(t2-t1)
+         error <- mean(pred != test$label)
+         
+         # Model summary
+         results <- data.frame(Model = "Classification Trees",
+                               `Sample Size` = size,
+                               Data = data.name,
+                               Running.time = running.time,
+                               `Prediction error` = error
+                               )                   
+         
+         return(results)
+}
+
+# Deleting previous tab
+tab <- NULL
+
+# Running the function for 3 different sample sizes and 3 iterations for each saize
+tab.trees <- iteration.function(trees.model)
+
+# Displaying the results
+score.trees <- scoring("trees")
+score.trees.avg <- score.avg("trees")
+datatable(score.trees)
+datatable(score.trees.avg)
+# Save data
+saveRDS(score.trees, "trees")
+saveRDS(score.trees.avg, "trees_avg")
+```
+
+```{r load_model8}
+# Loading the data
+datatable(loadRDS("trees"))
+datatable(loadRDS("trees_avg"))
+```
+
+### Model 9: Random Forest    
+
+Random forest aims at overcoming the limitation of decision trees by averaging prediction results from multiple trees, therefore improve accuracy. It also refrains from selecting same dominant variables at the root (major issue with Bagging) but randomly use subsets of all variable each time. Therefore, selected trees are less correlated, which will further reduce error rates.
+
+```{r code_model9_development, eval = FALSE}
+
+pred.mat.rf <- NULL
+rf.model <- function(size,data.name){
+         library(randomForest)
+         # Setting starting time
+         t1 <- Sys.time()
+         
+         # Training the model
+         model <- randomForest(formula = as.factor(label)~.,data = get(data.name))
+         
+         # Predicting
+         pred <- predict(object = model,newdata = test)
+         
+         # Ending time
+         t2 <- Sys.time()
+         
+         running.time <- as.numeric(t2-t1)
+         error <- mean(pred != test$label)
+         
+         # Model summary
+         results <- data.frame(Model = "randomForest",
+                               `Sample Size` = size,
+                               Data = data.name,
+                               Running.time = running.time,
+                               `Prediction error` = error
+                               )
+         pred.mat.rf <<- cbind(pred.mat.rf,as.character(pred))
+         return(results)
+}
+
+
+
+# Deleting previous tab
+tab <- NULL
+
+# Running the function for 3 different sample sizes and 3 iterations for each saize
+tab.rf <- iteration.function(rf.model)
+
+# Displaying the results
+score.rf <- scoring("rf")
+score.rf.avg <- score.avg("rf")
+datatable(score.rf)
+datatable(score.rf.avg)
+# Save data
+saveRDS(score.rf, "rf")
+saveRDS(score.rf.avg, "rf_avg")
+```
+
+```{r load_model9}
+# Loading the data
+datatable(loadRDS("rf"))
+datatable(loadRDS("rf_avg"))
+```
+
+
+### Model 10: Ensemble : SVM + randomForest + Multinomial Logistic Regression    
+
+Based on the previous results, we choose the models with lowest scores, which are SVM and randomForest, they are able to give the most accurate answer using less time. In order to study how far an ensemble model could improve, we have not chosen the third best model (which is actually kNN_5 based on scores); but instead we choose multinomial logistic regression which gives relatively poor predctions and requires larger training set. We will later compare the results to see if it still outperform other models.   
+
+In order to do this, we modify these three models and create three matrices (each 10000*9) containing all the predictions of test set for each sample size while iterating the functions.       
+
+Thus the ensemble model works in the following way: For each sample size, extracting the columns containing predictions. Then choose the class which gets the most votes; note that when three models give three different predictions, we break tie by choosing the prediction from randomForest as it has the lowest error rate. And lastly calculate proportion of data used (A), running time (B) and error rate (C) correspondingly.
+
+
+```{r code_model10_development, eval = FALSE}
+set.seed(72)
+colnames(pred.mat.rf) <- sample_datasets
+colnames(pred.mat.svm) <- sample_datasets
+colnames(pred.mat.log) <- sample_datasets
+
+ensemble.model <- function(size,data.name){
+  
+  pred.mat <- cbind(pred.mat.rf[,data.name],pred.mat.svm[,data.name],pred.mat.log[,data.name])
+  # Setting starting time
+  t1 <- Sys.time()
+  
+  # new prediction
+  pred <- apply(pred.mat,1,vote)
+  # Ending time
+  t2 <- Sys.time()
+  
+  running.time <- as.numeric(t2-t1, units = 'secs')
+  error <- mean(pred != test$label)
+  
+  # Model summary
+  results <- data.frame(Model = "Ensemble",
+                               `Sample Size` = size,
+                               Data = data.name,
+                               Running.time = running.time,
+                               `Prediction error` = error
+                               )
+  return(results)                   
+}
+
+# Deleting Previous tab
+tab <- NULL
+# Running the function for 3 different sample sizes and 3 iterations for each size
+tab.ensemble <- iteration.function(model.name = ensemble.model)
+
+# Displaying the results
+score.ensemble <- scoring("ensemble")
+score.ensemble.avg <- score.avg("ensemble")
+datatable(score.ensemble)
+datatable(score.ensemble.avg)
+# Save data
+saveRDS(score.ensemble, "Ensemble")
+saveRDS(score.ensemble.avg, "Ensemble_avg")
+```
+
+```{r load_model10}
+datatable(loadRDS('Ensemble'))
+datatable(loadRDS('Ensemble_avg'))
+```
+
+
+
+### Scoreboard
+
+```{r scoreboard}
+tab.score <- data.table(rbind(loadRDS("xgb"),loadRDS("svm"),loadRDS("log"),loadRDS("kNN_5"),loadRDS("kNN_10"),loadRDS("ridge"),loadRDS("lasso"),loadRDS("rf"),loadRDS("trees"),loadRDS("Ensemble"))
+)
+setorderv(x=tab.score,cols = c("Score"))
+datatable(tab.score)
+```
+
+### Average Scoreboard
+
+```{r Avgscoreboard}
+tab.score.avg <- data.table(rbind(loadRDS("xgb_avg"),loadRDS("svm_avg"),loadRDS("log_avg"),loadRDS("kNN_5_avg"),loadRDS("kNN_10_avg"),loadRDS("ridge_avg"),loadRDS("lasso_avg"),loadRDS("rf_avg"),loadRDS("trees_avg"),loadRDS("Ensemble_avg")))
+
+setorderv(x=tab.score.avg,cols = c("Score"))
+
+datatable(tab.score.avg)
+```
+
+### Change of weights in score function   
+
+```{r}
+reweight <- data.table(re.weight(tab.score,weights = c(0,0.1,0.9)))
+setorderv(x=reweight,cols = "Score")
+
+reweight.avg <- reweight[,lapply(X=.SD,FUN=mean),keyby=c("Model","Sample.Size")]
+reweight.avg <- reweight.avg[,lapply(X=.SD,FUN=round.numerics,digits=digits),keyby=c("Model","Sample.Size")]
+setorderv(x=reweight.avg,cols = "Score")
+datatable(reweight.avg)
+```
+
+
+### Discussion
+
+We approached this project with two objectives : first one is to get a glimpse of as many machine learning techniques as possible (we did have 11 models, excluding ensemble, but drop the other two because the result was bad or took too long to run the model for modification); second one is to see which machine learning technique would give the best result given scoring criteria, in this project, the proportion of sample size use, running time, and accuracy.    
+
+Having said that, we selected 10 different models that we thought would make a good prediction but also would not take too long to run relatively than the others.     
+
+As one can see from the aggregated table of our scores of all the model, the ensemble model produced the best result in every facet - running time and the inaccuracy rate (proportion rate of sample size is excluded because its same across all model) - especially for the smallest sample dataset. Briefly talking about the ensemble model, we combined SVM, Random forest, and multinomial logistic regression to make the ensemble model; and for the method, we chose “vote”, which gives us the most frequent output if there is a tie among the selected model’s predictions. First, we created an ensemble model by averaging the prediction of top two models, SVM and Random Forest, then we decided to take another approach, vote, to see if the good result was because we only selected the top two models.  For that new strategy, we incorporate multinomial logistic, of which result was not satisfying as the other two but also not too bad as ridge or lasso regressions.  Still, it was the best result; however, we cannot blindly say that the ensemble will always give us the best result. In order to accomplish the best result, affected by the running time and accuracy, we should select the right models with the right strategy.     
+
+In terms of individual model’s result, SVM produced the best result, regardless of its sample size, time, and accuracy. It is reasonable because it is specialized in constructing a hyperplane in an N-dimension, hyperplane maximizing the margin distance. Random Forest, the second best predicting individual model, performed well: as the size of the sample increases its accuracy improved but with the cost of running time. This trend can be found in KNN models as well. Its accuracy improves with the cost of running time. As an unsupervised model, we took different approach from other supervised models: take out the outcome of the regression from both train and test set. Since there is no clear value K should be, through trial and error with many different values we have decided on 5 and 10 because these were within the range of values for which the scores were the best, and also because they are distinct enough from each other (if we wanted to optimize, then the K could be different for every sample, hence we chose one that gave very good results for all samples). Ridge and Lasso that are more well-known for feature selection than prediction performed relatively bad; yet, this is understandable as well, because unlike the Airbnb cases, where variables may have multicollinearity issues, the project requires whole sets of variables, 49 pixels. Classification tree model acted poorly. A classification tree is easy to interpret; however, it is vulnerable to deciding based on one or a few dominating variables, affecting the accuracy in this case. And, the inaccuracy rate across the 9 different sample sets are very similar, buttressing the fact that it is susceptible to the point, selecting dominants. Multinomial Logistic Regression took fast to perform, however, this algorithm is not efficient enough for our data because there are too many categories, and therefore didn't score as high as some mentioned models above (because of the probability nature of this model and its algorithms, it would do better with a relatively small number of categories). Lastly, XGboost model, which took forever to run, performed very disappointingly even in terms of accuracy. In overall score, it is reprimanded for its slow-building; however, it generated as good prediction as our best model, ensemble model, did like the sample size increases. 
+
+Furthermore, we have tested for different weights but they all give similar rankings. Ensemble, SVM and randomForest give the lowest overall points. Both K-nearest neighbours model do better job if we put more weights on time. In extreme cases, (such as 85% on running time and 15% on error rate) KNN outperforms other models, but this is quite unreasonable weighting since it disregards the accuracy, which should be the major focus. If we have more computing resources and time, so that we do not care too much of the sample data size nor the running time, then it is natural to select the most accurate models, that is ensemble, SVM or randomForest.
+
+In short, from this project, we learn that each machine learning has its own exclusive advantages. In other words, when it comes down to decide which model to select, we should consider their traits as well as running time. Depends on the situation, time against accuracy, and purpose of analysis, accuracy versus interpretation, we should carefully select model instead of selecting best Random Forest or SVM, which are very difficult to interpret.  
+  
+
