@@ -1,0 +1,796 @@
+---
+title: "CHICAGO CRIME TYPE ANALYSIS"
+author: "Nguyen Thuy Linh, Xixi Chen, Jiaao Yu, Cijun Sun"
+date: "5/9/2019"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+##Introduction
+Chicago has a crime rate, especially violent crime rate, that is higher than the US average. It has been tracked by the Chicago Police Department’s Bureau of Records since the beginning of the 20th century. The Chicago Crime dataset reflects reported incidents of crime that occurred in the City of Chicago from 2001 to present. However, for the purpose of our study, we have decided to work with years 2003-2018 due to the significantly smaller number of entries for 2001-2002. Our primary goal is to predict crime type based on factors of interest, which will be described below. If we find the risk factors and circumstances under which the crimes occur the most, we could, for instance, potentially find out how to minimize the chances of falling into a dangerous situation. 
+
+To be more specific, here are the question and interpretation we try to adjust.
+1.  How has the number of various crimes changed over time in Chicago?
+2.  How have the number of arrests corresponded to the crimes changed over time in Chicago?
+3.  Are there any trends in the crimes being committed?
+4.  Which crimes are most frequently committed?
+5.  Which locations are these frequent crimes being committed to?
+6.  Are there certain high crime neighborhoods?
+7.  How has the number of Homicides changed over the years in Chicago?
+
+##Significance of the Analysis
+
+By carrying an in-depth analysis, we can try to identify the root cause of the homicides and violence and then arrive at a solution which would result in a reduction in bloodshed and help bring peace to this city which has long been traumatized by violent crimes.
+Once a solution is found, it could, to some degree be adopted by other cities which are prone to high rates of crime. It is of considerable significance to examine this kind of real-world data in order to understand the nature of crimes, assure public safety and undertake preventive measures.
+
+##Sources of Data
+We obtained the dataset from the following [link](https://data.cityofchicago.org/Public-Safety/Crimes-2001-to-present/ijzp-q8t2).
+
+It is a reliable, accurate and representative source of information as it comes directly from the official database of Chicago (Chicago Data Portal) and the dataset was extracted from the Chicago Police Department’s Citizen Law Enforcement Analysis and Reporting system.
+
+##Assumptions:
+Since our data consists mainly of variables with multiple factors, we had to assume that only a certain number of models would be appropriate. We also had to choose covariates to add in the model so that they can make predictions which are as accurate as possible, both for the results and logical interpretation. Due to the quite high number of correlated potential predictors, we had to judge which ones to include or groups, such as location and time variables. The motivation for selected covariates is mentioned earlier in the project.
+
+##Examination of Data:
+###Dataset Description: 
+We obtained the full dataset from the Chicago Data Portal website. The dataset has 6845673 crime incidents and 22 variables. For data cleaning, since the size of the dataset is large enough, we deleted the observations that contain missing values. Besides, to reduce computation time, we decided to use a subset of the full dataset. The main goal of our project is to determine how well can we use past year crime information to predict the more recent years’ crime types, so we chose the outcome variable to be Crime Type, which consists of 34 different categories in the original dataset.
+
+To prevent poor accuracy of model predictions, we decided to order the crime types by their frequency in the data set and extracted the data with top 5 most common ones, namely “Assault”, “Battery”, “Criminal Damage”, “Narcotics”, and “Theft”. As we can see in the following plot, the first 5 crime types make up most of the data and the second plot suggests that lots of crime type occur quite a few compared to others(especially the first 5), and that’s why we choose them as the reserved classes.
+
+```{r libraries, message=FALSE, echo = FALSE, warning = FALSE}
+library(prettydoc)
+library(data.table)
+library(Hmisc)
+library(scales)
+library(DT)
+library(leaflet)
+library(lubridate)
+library(ggmap)
+library(ggplot2)
+library(randomForest)
+library(grid)
+library(nnet)
+library(glmnet)
+library(MASS)
+library(ipred)
+library(nnet)
+library(caret)
+library(rpart)
+library(xgboost)
+library(readr)
+library(stringr)
+library(caret)
+library(car)
+library(grid)
+library(dplyr)
+library(rpart.plot)
+```
+
+```{r my_functions, echo=FALSE}
+round.numerics <- function(x, digits = 0, nearest = 1){
+  if(is.numeric(x)){
+    return(nearest * round(x = x/nearest, digits = digits))
+  }
+  else{
+    return(x)
+  }
+}
+
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+
+
+
+
+create.formula <- function(outcome.name, input.names, input.patterns = NA, all.data.names = NA, return.as = "character") { 
+  variable.names.from.patterns <- c()
+if (!is.na(input.patterns[1]) & !is.na(all.data.names[1])) {
+pattern <- paste(input.patterns, collapse = "|") 
+variable.names.from.patterns <- all.data.names[grep(pattern = pattern,
+x = all.data.names)]
+}
+all.input.names <- unique(c(input.names, variable.names.from.patterns)) 
+all.input.names <- all.input.names[all.input.names !=
+outcome.name]
+if (!is.na(all.data.names[1])) {
+all.input.names <- all.input.names[all.input.names %in% all.data.names]
+}
+input.names.delineated <- sprintf("`%s`", all.input.names)
+the.formula <- sprintf("`%s` ~ %s", outcome.name, paste(input.names.delineated,
+collapse = " + "))
+if (return.as == "formula") {
+return(as.formula(the.formula)) }
+if (return.as != "formula") { return(the.formula)
+} }
+
+create.x.and.y <- function(the.formula, data) {
+    require(data.table)
+    setDT(data)
+    x <- model.matrix(object = as.formula(the.formula), 
+        data = data)
+    y.name <- trimws(x = gsub(pattern = "`", replacement = "", 
+        x = strsplit(x = the.formula, split = "~")[[1]][1], 
+        fixed = TRUE))
+    y <- data[as.numeric(rownames(x)), get(y.name)]
+    return(list(x = x, y = y))
+}
+
+
+percentage.correctly.classified <- function(predicted, actual, 
+    na.rm = TRUE) {
+    return(mean(predicted == actual, na.rm = na.rm))
+}
+
+```
+
+
+```{r constants, echo=FALSE}
+id.name <- "ID"
+number.name <- "Case Number"
+date.name <- "Date"
+block.name <- "Block"
+iucr.name <- "IUCR"
+type.name <- "Primary Type"
+description.name <- "Description"
+location.description.name <- "Location Description"
+arrest.name <- "Arrest"
+domestic.name <- "Domestic"
+beat.name <- "Beat"
+district.name <- "District"
+ward.name <- "Ward"
+community.name <- "Community Area"
+fbi.name <- "FBI Code"
+fbi.rc.name <- "FBI Recode"
+x.name <- "X Coordinate"
+y.name <- "Y Coordinate"
+year.name <- "Year"
+updated.name <- "Updated On"
+latitude.name <- "Latitude"
+longtitude.name <- "Longitude"
+location.name <- "Location"
+season.name <- "Season"
+date.name2 <- "Date2"
+date.name3 <- "Date3" 
+location.group.name <- "Location grouped"
+month.name <- "Month"
+day.name <- "Day"
+hour.name <- "Hour"
+date.name2 <- "Date2"
+time.name <- "Time"
+area.name <- "Area"
+predictor.var <- c(type.name, fbi.rc.name, arrest.name, area.name, domestic.name, time.name, season.name)
+
+unique.count <- c(day.name, month.name, year.name)
+
+full.models.name <- c("Bagging", "Neural Networks", "Multinomial Logistic Regression", "Lasso Regression", "Ridge Regression", "Classification Trees", "Random Forest")
+
+models.name <- c("Bagging", "Neural Networks", "Multinomial Logistic Regression", "Classification Trees", "Random Forest")
+
+predictors.name <- c(block.name, location.group.name, arrest.name, domestic.name, district.name, ward.name, fbi.rc.name, x.name, y.name, season.name)
+
+formula.name <- create.formula(outcome.name = type.name, input.names = predictors.name)
+```
+
+
+```{r sample, eval = FALSE, echo = FALSE}
+Crimes <- fread("../Data/Crimes_-_2001_to_present.csv")
+Crimes. <- Crimes[!Year %in% c(2019, 2001, 2002),  ] # remove obs from 2019, 2001 and 2012
+
+# remove NAs 
+Crimes. <- na. omit(Crimes.)
+Crimes. <- data.table(Crimes.)
+type <- Crimes.[, .N, by = type.name]
+setorder(type, -N)
+type.5 <- type[1:5, get(type.name)]
+Crimes. <- Crimes.[get(type.name) %in% type.5, ] #only keep the top 5 crime types
+s <- rep(list(), 5)
+n <- 20000
+
+# random sample for top 5 crime types, each has size 20000
+set.seed(20190415)
+for (i in 1:5){
+  s[[i]] <- sample(which(Crimes.[, get(type.name)] == type.5[i]), n) 
+}
+crimes <- Crimes.[unlist(s), ] 
+```
+
+```{r type summary, echo = FALSE, fig.height=8}
+Crimes <- fread("../Data/Crimes_-_2001_to_present.csv")
+###Number of each crime type
+count <- Crimes[, .N, by = type.name]
+setorder(count, by = -N)
+count$`Primary Type` <- factor(count$`Primary Type`, levels = count$`Primary Type`)
+
+p1 <- ggplot(count[1:10], aes(`Primary Type`, N, fill = `Primary Type`)) +
+  geom_bar(stat="identity") + xlab("") + theme_classic() + 
+  theme(axis.text.x = element_blank()) + 
+  theme(panel.grid =element_blank()) +   
+  theme(axis.ticks = element_blank()) + ylab("count") + ggtitle("Number of Crimes")+
+  theme(plot.title = element_text(hjust = 0.8))
+p2 <- ggplot(count, aes(`Primary Type`, N, fill = `Primary Type`)) +
+  geom_bar(stat="identity") + xlab("") + theme_classic() + 
+  theme(axis.text.x = element_blank()) + 
+  theme(panel.grid =element_blank()) +   
+  theme(axis.ticks = element_blank()) + guides(fill=FALSE) + ylab("count")
+multiplot(p1, p2)
+rm(Crimes)
+```
+
+We then randomly sampled 20,000 observations for each of the top five crime types and use this dataset to do our analysis. Thus, we have a dataset containing 100,000 observations.
+
+###Data Preprocess:
+
+Most of the variables in the dataset are categorical variables. We conducted data preprocess for all the variables, except ID, Case number, IUCR and Description, since ID and Case number contains a unique identifier for the crime incident, which is not useful, and the variable IUCR and Description are directly linked to our response variable Crime type, which cannot be used in our classification models.
+
+When considering the correlation between these variables, we found that most of p.values in chisq test for each of two variables are less than 0.05, suggesting that they are significantly correlated. It may result from the high degree of freedom of these variables since they have plenty of classes, so we don’t suppose to delete any of them to avoid missing information.
+
+The variable Date contains the date and the time for the crime incident. Using this variable, we created some new variables such as Hour, Season (“Winter”, “Spring”, “Summer”, and “Fall”), and Time (“Afternoon”, “Evening”, “Morning”, “Night”).
+
+Using the variable  FBI code, which indicates crime classification, and information from [Chicago Police Department website](
+http://gis.chicagopolice.org/clearmap_crime_sums/crime_types.html), we created the new variable FBI Recode, which indicates seriousness of crimes (“Serious”, “Less serious”).  
+
+The variable Location has 102 levels originally, so we grouped similar location together and obtained a new Location Description variable, which has 10 levels, such as “Alley”, “Apartments”, and “Parking Lot”.
+
+When we were exploring the Community Area variable, we encountered a problem. There are total 77 community areas in the Chicago(as showed in the map), so this variable should only contain numbers from 1 to 77. However, one of the observations has a community area “0”, we decided to delete that observation resulting in a dataset with 99,999 cases.
+
+<img src="../Picture/communitymap.png" width = 50% height = 50% />
+
+We then created a new variable Area with nine levels which is based on community area (“Central”, “West”, “South” etc.).
+
+Other variables in the dataset are Arrest, which indicates whether an arrest was made, Domestic, which indicates whether the incident was domestic-related, District, Ward, Beat, and Block that the incident occurred.
+
+The tidy data is showed as following(To shorten the running time, we just present the first 5 rows).
+
+```{r data preprocess,eval = FALSE, echo = FALSE}
+crimes <- crimes[, eval(updated.name) := NULL] ## delete updated on variable
+
+# Create Season Variable
+crimes <- crimes[, eval(date.name2) := as.character(get(date.name))]
+crimes <- crimes[, eval(date.name2) := substr(get(date.name2),1,nchar(get(date.name2))-12)]
+crimes <- crimes[, eval(date.name2) := as.Date(get(date.name2), "%m/%d/%Y")]
+crimes <- crimes[, eval(season.name) := as.numeric(month(get(date.name2)))]
+crimes <- crimes[, eval(season.name) := ifelse(get(season.name) <= 3, "Winter", ifelse(get(season.name) <= 6, "Spring", ifelse(get(season.name) <= 9, "Summer", "Fall")))]
+
+# Create Tume variable
+crimes <- crimes[, eval(hour.name) := as.ITime(get(date.name), "%m/%d/%Y %H:%M:%S")]
+crimes <- crimes[, eval(hour.name) := hour(get(hour.name))]
+crimes <- crimes[, eval(hour.name) := ifelse(grepl("PM", get(date.name)), get(hour.name)+12, get(hour.name))]
+
+# Create month variable
+crimes <- crimes[, eval(month.name) := substr(get(date.name2),6, 7)]
+crimes <- crimes[, eval(day.name) := substr(get(date.name2),9, 10)]
+crimes <- crimes[, eval(date.name2) := NULL]
+is.numeric(crimes[, get(hour.name)])
+
+# Create daytime gourp variable
+crimes[, eval(time.name) := ifelse(get(hour.name) > 6 & get(hour.name) < 12, "Morning", 
+                                   ifelse(get(hour.name) >=12 & get(hour.name) < 17, "Afternoon", ifelse(get(hour.name) >=17 & get(hour.name) < 20, "Evening", 
+                                   "Night")))]
+
+# Create exact date variable
+crimes[, eval(date.name) := as.Date(get(date.name), "%m/%d/%Y")]
+
+# Regroup the location variable
+location.desc <- crimes[, get(location.description.name)]
+crimes[, eval(location.group.name) := "Others"]
+crimes[grep("APARTMENT", location.desc), eval(location.group.name) := "Apartment"]
+crimes[grep("PARKING", location.desc), eval(location.group.name) := "Parking lot"]
+crimes[grep("SCHOOL|COLLEGE", location.desc), eval(location.group.name) 
+       := "School|College"]
+crimes[grep("ALLEY", location.desc), eval(location.group.name) := "Alley"]
+crimes[grep("STORE|WASH|SHOP|OFFICE|ANIMAL|WAREHOUSE", location.desc),
+       eval(location.group.name) := "Store"]
+crimes[grep("VEHICLE|TAXICAB|TRAIN|TRUCK|BUS|TRANSPORTATION|BOAT", location.desc), eval(location.group.name) := "Vehicle"]
+crimes[grep("RESTAURANT|CLUB|HOTEL|TAVERN", location.desc), eval(location.group.name) := "Restaurant"]
+crimes[grep("STREET|SIDEWALK", location.desc), eval(location.group.name) := "Street"]
+crimes[grep("RESID|GARAGE", location.desc), eval(location.group.name) := "Residence"]
+crimes[, .N, by = location.group.name]
+
+save(crimes, file = "crimes.top5.RData")  ##The final data we use
+```
+
+```{r, eval = FALSE, echo = FALSE}
+## Beat, district, ward variables:
+# Check if the beat where the incident occurred is numeric:
+crimes[, is.numeric(get(beat.name))]
+# Check if the district is numeric:
+crimes[, is.numeric(get(district.name))]
+# How many unique wards:
+crimes[, length(unique(get(ward.name)))]
+# Check if ward is numeric:
+crimes[, is.numeric(get(ward.name))]
+# Wards with most crimes:
+ward.tab <- as.data.table(table(crimes[, get(ward.name)]))
+setnames(ward.tab, old = "V1", new = eval(ward.name))
+setorderv(ward.tab, cols = "N", -1)
+ward.tab[1:5,]
+# How many unique districts:
+crimes[, length(unique(get(district.name)))]
+# Districts with most crimes:
+dist.tab <- as.data.table(table(crimes[, get(district.name)]))
+setnames(dist.tab, old = "V1", new = eval(district.name))
+setorderv(dist.tab, cols = "N", -1)
+
+# explore variable fbi code
+crimes[, .N, by = fbi.name]
+# recode variable fbi.code according to the website 
+## fbi codes for serious crime, others are less serious
+serious <- c("01A", "02", "03", "04A", "04B", "05", "06", "07", "09") 
+crimes[, eval(fbi.rc.name) := ifelse(get(fbi.name) %in% serious, "serious", "less serious")]
+
+# explore variable year
+crimes[, .N, by = year.name]
+hist(crimes[, get(year.name)], main = "Histogram of Year")
+
+# explore location
+crimes[, .N, by = location.name]
+
+#explore variable location, arrest, domestic 
+
+crimes[, sum(is.na(get(arrest.name)))]
+crimes[, sum(is.na(get(domestic.name)))]
+crimes[, unique(get(year.name))]
+```
+
+```{r data loading, echo = FALSE}
+load("../Data/data.RData")
+crimes <- data.table(crimes)
+datatable(crimes[1:5])
+```
+
+## Investigation
+
+For the investigation, we first conduct exploratory analysis to acquire some interesting observation and then construct the model to predict crime rate. Hopefully, our predictive model could be useful for the government to do some prevention and intervention to the crime by distributing police force based on the important factors from our conclusion.
+
+###Explortary Data Analysis
+
+
+###Visualization:
+In order to better understand the dataset, we also created some plots. 
+
+*（1）How has crime evolved over time in the city of Chicago?*
+
+*（2）What time of day do most crime occur?*
+
+*（3）In which locations of the city is crime more likely to happen?*
+
+*（4）Which districts are more potentially dangerous?*
+
+
+##Modeling:
+###Training and Testing set:
+
+```{r datasets, eval = FALSE, echo = FALSE}
+# Split data into training and test sets by years
+train <- crimes[get(year.name) <= 2012, ]
+test <- crimes[get(year.name) > 2012,]
+# Number of observations in each set:
+f1 <- create.formula(outcome.name = type.name, input.names = c(arrest.name, domestic.name, season.name, location.group.name, time.name, fbi.rc.name, area.name))
+
+t1 <- train
+t1[, eval(type.name) := as.factor(get(type.name))]
+t2 <- test
+```
+
+After we explored each variables we splitted our dataset into training set and testing set according to the year when the crime occurred to build and evaluate classification models. The training set includes crimes from 2003-2012 and contains `r #train[, .N] ` rows, and the testing set includes crimes from 2013-2018 and has `r #test[, .N]` rows.
+
+
+To train our data and predict crime types, we have implemented the following methods: Neural Networks, Random Forest, Multinomial Logistic Regression, Bagging, Classification Trees, Lasso Regression, Ridge Regression, Gradient Boosting. We then calculated the model accuracy based on the percentage of correctly classified crimes when comparing predictions to the test set. Since we only have categorical variables in our model, we could not use machine learning methods such as K-Nearest Neighbors and Support Vector Machines. For all of the methods except Gradient Boosting, we chose the following seven predictors: Arrest, Domestic, Season, Location, Time, FBI Recode (Crime Severity), Area. We did not use variables such as District, Ward, Beat, and Block, since they all contain too many levels, and we did not think of a reasonable way to group them. For Gradient Boosting, all of the variables were initially used.
+
+```{r multinomial logistic, eval = FALSE, echo = FALSE}
+model.log <- multinom(formula = as.formula(f1), data = t1)
+pred.log <- predict(object = model.log, newdata = t2, type = "class")
+##percentage.correctly.classified(pred.log, t2[, get(type.name)])
+```
+
+```{r classification tree, eval = FALSE, echo = FALSE}
+model.ct <- rpart(formula = as.formula(f1), data = t1)
+
+pred.ct <- predict(object = model.ct, newdata = t2, type = "class")
+##percentage.correctly.classified(pred.ct, t2[, get(type.name)])
+```
+
+```{r ridge and lasso, eval = FALSE, echo = FALSE}
+x.y.train <- create.x.and.y(f1, data = t1)
+x.y.test <- create.x.and.y(f1, data = t2)
+
+model.ridge <- glmnet(x = x.y.train$x, y = x.y.train$y, family = "multinomial", alpha = 0)
+pred.ridge <- predict(object = model.ridge, newx = x.y.test$x, type = "class")
+##percentage.correctly.classified(pred.ridge, t2[, get(type.name)])
+
+model.lasso <- glmnet(x = x.y.train$x, y = x.y.train$y, family = "multinomial", alpha = 1)
+pred.lasso <- predict(object = model.lasso, newx = x.y.test$x, type = "class")
+##percentage.correctly.classified(pred.lasso, t2[, get(type.name)])
+```
+
+```{r randomForest, eval = FALSE, echo = FALSE}
+t3 <- t1[,c(6,9,10,22,26,27,28,29)]
+# remove spaces from variable names
+colnames(t3) <- c("PrimaryType", arrest.name, domestic.name, season.name, time.name, "FBIRecode", "LocationGrouped", area.name)
+t4 <- t2[,c(6,9,10,22,26,27,28,29)]
+colnames(t4) <- c("PrimaryType", arrest.name, domestic.name, season.name, time.name, "FBIRecode", "LocationGrouped", area.name)
+# training set: variables as factors
+t3 <- t3[,eval(season.name):=as.factor(get(season.name))]
+t3 <- t3[,eval(time.name) := as.factor(get(time.name))]
+t3 <- t3[, "FBIRecode" := as.factor(get("FBIRecode"))]
+t3 <- t3[, "LocationGrouped" := as.factor(get("LocationGrouped"))]
+t3 <- t3[, eval(area.name):= as.factor(get(area.name))]
+# test set: variables as factors
+t4 <- t4[,eval(season.name):=as.factor(get(season.name))]
+t4 <- t4[,eval(time.name) := as.factor(get(time.name))]
+t4 <- t4[, "FBIRecode" := as.factor(get("FBIRecode"))]
+t4 <- t4[, "LocationGrouped" := as.factor(get("LocationGrouped"))]
+t4 <- t4[, eval(area.name):= as.factor(get(area.name))]
+# create new formula
+f2 <- create.formula(outcome.name = "PrimaryType", input.names = c(arrest.name, domestic.name, season.name, time.name, "FBIRecode", "LocationGrouped", area.name))
+
+model.rf <- randomForest(formula = as.formula(f2), data = t3)
+pred.rf <- predict(model.rf, newdata = t4)
+##percentage.correctly.classified(pred.rf, t4[, get(“PrimaryType)])
+```
+
+```{r nnet , eval = FALSE, echo = FALSE}
+f1 <- create.formula(outcome.name = type.name, input.names = c(arrest.name, domestic.name, season.name, location.group.name, time.name, fbi.rc.name, area.name))
+
+t1 <- train
+t1[, eval(type.name) := as.factor(get(type.name))]
+m1 <- nnet(as.formula(f1), t1, size = 15 , decay= 5e-4, linout = TRUE, maxit = 200)
+pred.nnet <- predict(object = m1, newdata = test, type = "class")
+#mean(pred.nnet == test[, get(type.name)])
+##percentage.correctly.classified(pred.nnet, t2[, get(type.name)])
+
+# tuned model
+# my.grid <- expand.grid(.decay = c(5e-4, 5e-3, 5e-2), .size = c(10, 15, 20))
+# best.m <- train(as.formula(f1), data = t1, method = "nnet", maxit = 300, tuneGrid = my.grid, trace = F, linout = TRUE)
+# pred.best <- predict(object = best.m, newdata = test)
+# mean(pred.best == test[, get(type.name)])
+```
+
+
+```{r bagging, eval = FALSE, echo = FALSE}
+m2 <- bagging(as.formula(f1), t1)
+pred.bag <- predict(object = m2, newdata = test, type = "class")
+##percentage.correctly.classified(pred.bag, test[, get(type.name)])
+
+
+# double bagging
+scomb <- list(list(model = lda, predict = function(object, newdata) predict(object, newdata)$class))
+m2.double <- bagging(as.formula(f1), data = t1,  comb = scomb)
+##pred.bag2 <- predict(object = m2.double, newdata = test, type = "class")
+```
+
+```{r xgboost, eval = FALSE, echo = FALSE}
+xgb_crime<- crimes[,-(get(id.name):get(date.name))]
+
+#new_block <- model.matrix(~Block-1,xgb_crime)
+#new_description <- model.matrix(~get(description.name)-1,xgb_crime)
+#new_IUCR <- model.matrix(~get(iucr.name)-1, xgb_crime)
+new_location <- model.matrix(~get(location.group.name)-1, xgb_crime)
+new_arrest <- model.matrix(~get(arrest.name)-1, xgb_crime)
+new_Domestic <- model.matrix(~get(domestic.name)-1, xgb_crime)
+#new_fbi <- model.matrix(~get(fbi.name)-1, xgb_crime)
+new_season <- model.matrix(~get(season.name)-1, xgb_crime)
+new_time <- model.matrix(~get(time.name)-1, xgb_crime)
+new_fbirecode <- model.matrix(~get(fbi.rc.name)-1, xgb_crime)
+
+#combine on hotencoded variables 
+xgb_crime_hot<-xgb_crime[,-(get(description.name): get(domestic.name))]
+xgb_crime_hot<- xgb_crime_hot[,!c("IUCR", "FBI Code", "Season","Time","FBI Recode","Location grouped")]
+xgb_crime_comb<- cbind(xgb_crime_hot, new_location,new_arrest, new_Domestic, new_season, new_time, new_fbirecode)[,-c("Block","Location")]
+
+xgb_crime_comb$Month<- as.numeric(xgb_crime_comb$Month)
+xgb_crime_comb$Day<- as.numeric(as.factor(xgb_crime_comb$Day))
+#xgb_crime_comb$Location<- as.numeric(xgb_crime_comb$Location)
+
+xgb.train <- xgb_crime_comb[get(year.name) <= 2012,]
+xgb.test<- xgb_crime_comb[get(year.name) > 2012,]
+
+train_label <- as.numeric(as.factor(xgb.train$`Primary Type`))-1
+
+test_label <- as.numeric(as.factor(xgb.test$`Primary Type`))-1
+# excluded the variable Block
+train_matrix <- xgb.DMatrix(data= data.matrix(xgb.train[,-1]), label= train_label) 
+test_matrix <- xgb.DMatrix(data= data.matrix(xgb.test[,-1]), label= test_label) 
+```
+
+```{r, eval = FALSE, echo = FALSE}
+# simple xgboost
+numberOfClasses <- length(unique(xgb.train$`Primary Type`))
+xgb_params <- list(booster = "gbtree",objective = "multi:softprob",
+                   eval_metric = "mlogloss",
+                   num_class = 5)
+nround    <- 200 # number of XGBoost rounds
+cv.nfold  <- 5
+
+# simple xgboost
+xgb <- xgboost(params = xgb_params,
+               data = train_matrix, 
+               eta = .01, 
+               max_depth = 10, 
+               nround=200, 
+               #early.stop.round=2,
+               #subsample = 1,
+               #colsample_bytree = 1,
+               seed = 1
+)
+
+
+#xgb.model =  xgb.train(params = xgb_params,
+                       #data = train_matrix, 
+                       #nrounds = 30)
+
+
+#cv_model <- xgb.cv(params = xgb_params,
+                   #data = train_matrix, 
+                   #nrounds = nround,
+                   #nfold = cv.nfold,
+                   #verbose = TRUE,
+                   #prediction = TRUE)
+
+#OOF_prediction <- data.frame(cv_model$pred) %>%
+ # mutate(max_prob = max.col(., ties.method = "last"),
+         #label = train_label + 1)
+#head(OOF_prediction)
+
+#confusionMatrix(factor(OOF_prediction$max_prob),
+                #factor(OOF_prediction$label),
+                #mode = "everything")
+
+# Function to compute classification error
+classification_error <- function(conf_mat) {
+  conf_mat = as.matrix(conf_mat)
+  
+  error = 1 - sum(diag(conf_mat)) / sum(conf_mat)
+  
+  return (error)
+}
+
+xgb_val_preds = predict(xgb, newdata = test_matrix)
+
+xgb_val_out = matrix(xgb_val_preds, nrow = 5, ncol = length(xgb_val_preds) / 5) %>% 
+               t() %>%
+               data.frame() %>%
+               mutate(max = max.col(., ties.method = 'last'), label = test_label + 1) 
+
+xgb_val_conf <- table(true = test_label + 1, pred = xgb_val_out$max)
+cat("XGB Validation Classification Error Rate:", classification_error(xgb_val_conf), "\n")
+xgb_val_conf2 <- confusionMatrix(factor(xgb_val_out$label),
+                                 factor(xgb_val_out$max),
+                                 mode = "everything")
+```
+
+For the nnet model, we built the model as follows.
+
+![](../Picture/nnet.png)
+
+For the xgboost model, we use more variables to examine the important factors contributes to the Chicago crime and we plot develop a feature importance plot.
+
+![](../Picture/importance.variable.png)
+
+The most important three variables are whether the crime is serious, whether the criminal gets arrested and whether he/she is domestic, which greatly influence the crime type. And it seems that all the other variables don’t have a significant effect, which can also be shown in the classification tree we’ve built before. 
+
+```{r, echo = FALSE}
+rpart.plot(model.ct)
+```
+
+##Results:
+
+Based on the exploratory data analysis, we are able to address several questions
+
+*（1）How has crime evolved over time in the city of Chicago?*
+
+```{r, echo=FALSE}
+# count the number of crimes each year 
+crime_trend<- crimes[, .(num.crimes=length(get(id.name))), by= c(year.name)]
+# Plot the graph 
+ggplot(crime_trend, aes(x=Year, y= num.crimes)) + geom_line(colour = "steelblue") + geom_point(colour = "steelblue") + theme_minimal() + theme(axis.title.x=element_blank()) + theme(axis.title.y=element_blank()) 
+```
+
+The number of crimes are decreaing across the years, but it seems to increase after 2015 and the number of crimes in 2015 is almost half of that in 2003, which may owe to the government's efforts.
+
+*（2）What time of day do most crime occur?*
+```{r, echo=FALSE}
+## count crime time
+dat <- crimes[, table(get(time.name))] %>% as.data.frame
+setorder(dat, by = -Freq)
+dat$Var1 <- factor(dat$Var1, levels = c("Morning", "Afternoon", "Evening", "Night"))
+p1 <- ggplot(dat, aes(Var1, Freq, fill = Var1)) + geom_bar(stat = "identity") + 
+     xlab(time.name) + ylab("Number") + theme_bw() + guides(fill=FALSE) +
+     theme(axis.text.x = element_text(size = 13),axis.text.y = element_text(size = 13),
+           axis.title.x = element_text(size = 16),axis.title.y = element_text(size = 16))+
+     scale_fill_discrete(breaks = dat$Var1)
+
+## count crime hour time
+crime_time_trend<- crimes[, .(num.crimes=length(get(id.name))), by= c(hour.name)]
+p2 <- ggplot(crime_time_trend, aes(x=get(hour.name), y = num.crimes))+ geom_line() + 
+     xlab(hour.name) + ylab("Number") + theme_bw() + guides(fill=FALSE) +
+     theme(axis.text.x = element_text(size = 13),axis.text.y = element_text(size = 13),
+           axis.title.x = element_text(size = 16),axis.title.y = element_text(size = 16))+
+     scale_fill_discrete(breaks = dat$Var1)
+multiplot(p1, p2)
+```
+
+Most of the crimes happen at night and in the afternoon. There have been least crimes in the morning about 3 am to 6 am. After that, the number of crimes is increasing and most of crimes happen between 
+7 pm to 10 pm, so we'd better avoid going outside during this time. But after that, the world seems to be safer.
+
+*（3）In which locations of the city is crime more likely to happen?*
+```{r, echo=FALSE, fig.width = 10}
+## count crime location
+dat <- crimes[, table(get(location.group.name))] %>% as.data.frame
+setorder(dat, by = -Freq)
+dat <- dat[1:10, ]
+dat$Var1 <- factor(dat$Var1, levels = dat$Var1)
+p <- ggplot(dat, aes(Var1, Freq, fill = Var1)) + geom_bar(stat = "identity") + 
+     xlab(location.group.name) + ylab("Number") + theme_bw() + guides(fill=FALSE) +
+     theme(axis.text.x = element_text(size = 13),axis.text.y = element_text(size = 13),
+           axis.title.x = element_text(size = 16),axis.title.y = element_text(size = 16))+
+     scale_fill_discrete(breaks = dat$Var1)
+p
+```
+
+The plot above suggests that most of the crimes happen at street, residence and apartment and it is always to safe to stay at school and even safer to stay at dining hall in college.
+
+```{r, echo=FALSE, fig.width = 10}
+## count each type of crimes by year
+dat <- crimes[, .N, by = c(year.name, type.name)]
+names(dat)[2] <- "Feature"
+ord <- dat[, max(N), by = Feature]
+setorder(ord, -V1)
+dat$Feature <- factor(dat$Feature, levels = ord$Feature)
+p <- ggplot(dat, aes(Year, N, group = Feature, color = Feature)) + geom_line() + 
+     scale_color_discrete(breaks = dat$Feature) + ylab("Number") + theme_bw() + guides(fill=FALSE) +
+     theme(axis.text.x = element_text(size = 13),axis.text.y = element_text(size = 13),
+           axis.title.x = element_text(size = 16),axis.title.y = element_text(size = 16))+
+     scale_fill_discrete(breaks = dat$Var1)
+p
+```
+
+Across the time, the number of each type of crimes are decreasing especially for the "NARCOTICS" crimes.
+
+*（4）Which districts are more potentially dangerous?*
+
+```{r echo = FALSE, message = FALSE, warning=FALSE}
+## group the crimes by their type and area
+newdat <- crimes[crimes$Latitude > 37, ]
+newdat %>% group_by(Area, `Primary Type`) %>% summarise(number = n()) %>%   arrange(desc(number)) %>%
+leaflet() %>% 
+addTiles() %>% 
+setView(lng = -87.6298, 
+          lat = 41.8781, zoom = 6) %>%  
+  addMarkers(lat = newdat$Latitude,lng=newdat$Longitude,
+             clusterOptions = markerClusterOptions(), popup=newdat$`Primary Type`) 
+
+## Get the basemap
+register_google(key = "AIzaSyAl1mmsi1rBaPuPGqZYSlPu2TLqvuWfuYk", write = TRUE)
+chicago <- get_map(location = "chicago", maptype = "terrain", source = "google", 
+                   zoom = 12)
+
+m <- ggmap(chicago)
+m +
+geom_point(aes(x = Longitude, y = Latitude, colour = get(area.name) ),data = crimes[sample(1:nrow(crimes), 6000)], alpha=0.5) + labs(title="Mapping Crimes in Chicago")
+
+library(treemap)
+new <- crimes %>% group_by(Area, `Primary Type`) %>% summarise(number = n()) %>% arrange(desc(number))
+treemap(new,index = c('Area','Primary Type'), vSize = 'number')
+```
+
+Moreover, we find that more crimes happen at the center part of Chicago and there are less crimes along the coach. In addition, from the treemap we can see that West of Chicago has the largest number of crime with large portion of the crime Narcotics. 
+
+For more information and plots, please go to the report engine part.
+
+
+
+Below are the prediction accuracy rates for the models using mentioned seven predictors:
+```{r, echo = FALSE}
+model <- c("Neural Networks","XGB","Random Forest", "Multinomial Logistic Regression", "Bagging", "Classification Trees", "Lasso Regression", "Ridge Regression")
+value <- c("65.96%","65.73%", "65.14%", "65.01%", "64.25%", "62.79%", "62.25%", "41.72%")
+res <- data.frame(model, `Percentage Correctly Classified` = value)
+datatable(res)
+```
+
+As we can see, Neural Networks resulted in best predictions, 65.96% of correctly classified crimes, which is what we expected given this method’s excellent predictive performance, followed by XGBoost. Similarly, Random Forest, which is highly adaptable, predicted 65.14% of the crime types correctly. Next, Multinomial Logistic Regression did a pretty good job at the predictions of future crimes, with 65.01% accuracy. As expected, Lasso and Ridge Regressions were found to be the worst models with poor predictive performances (especially Ridge).
+
+## Interpreatation:
+
+
+###OVERALL TREND
+
+The overall trends indicated that the crime rate is decreasing, however, from 2015 and after, there shows an increase. Chicago experienced its deadliest year in almost two decades in 2016. According to Chicago police, 762 people were killed, an increase of 58% from 2015. The rise in homicides came as the number of shootings—3,550, with 4,331 shooting victims—jumped by 47%.
+One of the most striking observation is the growth in the city’s homicide rate. While remaining steady between 2010 and 2015, the murder rate in Chicago jumped dramatically in 2016 to 27.7 homicides per 100,000 residents. That’s the highest homicide rate in Chicago since the mid-1990s and well above a low of about 15 per 100,000 in 2014. There is huge increase in the number of homicides in Chicago in 2016 compared to previous years.The High number of homicides which take place in Chicago, don’t reflect well on the law enforcement agencies and the government.
+
+###LOCATION
+
+Most of the city’s murder increase is concentrated in just a few neighborhoods on Chicago’s South and West sides.   
+
+The areas near the airport and the area near the harbor seem to be two hazardous areas, as many crimes have occurred here.
+The number of crimes involving sidewalks also seems to have greatly reduced. Probably this could be owed to higher Police patrolling.
+
+###TIME
+Based on the data, the number of crimes is way higher than the number of arrests. 
+
+### Reasons behind 
+
+The stagnant arrest numbers meant more of those crimes remained unsolved than in previous years, therefore, the lack of arrests following violent crimes may have played a role in worsening a cycle of retaliatory violence.
+
+After reading some external resources, it turns out that The victims were mostly black and in their teens, while many of the suspects had prior arrest records. Combining without analysis result, the problem in Chicago might not be a widespread change in anti-social or criminal behavior in general, but rather a narrower one of gun crimes committed in public places, frequently by young people in our city’s most distressed neighborhoods.”
+
+###Potential change of decision making & Suggestions
+
+Our result could have some impact in the field and potentially affect the decision making of Chicago government. Our predictive model could predict the crime rate and judges the sensitivity of an area in Chicago and vicinity and predict when the crime could be highly like to occur.
+
+The issue of bringing peace back to Chicago is no easy task. This is possible only through dedicated and coordinated efforts between law enforcement agencies and the communities involved.
+
+The Chicago government could consider investing in a more robust surveillance system in the areas which have shown the highest rates of violent crime. The divergence between crimes committed and arrests are suggestive that there is no evidence to investigate on in order to find the person who has committed the crime. And the govenment can increase police patrolling certain area of West and the south side of Chicago.
+
+The Chicago government could increase funding to youth center programming in an effort to keep teens off of the street and in a safe positive environment. This can take a variety of forms including intramural sports or even video games. Youth center programming greatly improves the quality of life of the youth and can act as a deterrent from teens developing an interest in joining gangs. When teens become passionate about a certain activity it can have a positive impact on not just them, but other teens that they socialize and talk to. This is to say that effective youth center programming can produce a network effect in much the same way that gang affiliation can create a network effect. We need to ensure the network effect is growing in the direction we desire by developing the proper infrastructure for that to be possible. In this case that infrastructure is a variety of youth programming. Youth programming must also have a reasonable amount of locations. That is to say that teens need to be able to walk or take public transportation to the youth center without it being a burden. Increased travel time could be a deter teens from being interested in the youth center because traveling can be both physically and mentally tiring. Another reason why location and travel time are an important factor to the effectiveness of youth centers is because a teen may feel unsafe if they are required to travel long distances, especially if the travel path is through a known crime “hotspot”.
+The Chicago government could investigate further into the increased homicide rate to seek out if this is a result of gang activity. They could do this by using undercover officers to obtain information. If they discover that gang activity is a large part of the problem they could call for help from national resources as to allow them to maintain adequate police coverage for the rest of Chicago while combating the unique problem of gang violence. While eliminating gangs completely is probably not realistic, refinement of knowledge of gang activity can inform policymakers to be able to develop measures which protect the public while preventing the youth from being recruited into the gangs which further perpetuates the problem. 
+
+According to some research bird chirping has been found to make people feel more relaxed and peaceful. Therefore it has the potential of lowering the crime rate. The Chicago Government could experiment with installing simulated bird chirping speakers along with the surveillance systems. Many college campuses use this method. It could be extended to the general public as an experiment. 
+There should be an increased focus on providing psychological services within the Chicago public school system. All youth are at risk of resorting to violent behavior and therefore, preventative measures should be taken. If gang activity is a primary influence on the spike in homicides between 2015 and 2016 then this may mean that more youth are motivated to join gangs. Individual motivation for this behavior may vary but it is often the case that the youth has psychological problems that are not being addressed. Increasing the budget allocated to school psychological counselors could make a significant impact in the lives of many students who are considering joining a gang. Psychological counselors have the ability to work with the youth and redirect their energy to a positive goal which will empower them in the future. This strategy can and should work hand in hand with available youth center resources. The school counselor can initiate the push of a student toward a positive activity at a youth center and then the youth center supervisor can monitor the students, to a degree, once they have attended the facility. 
+
+Psychological services in general, that is public social services, should work to “rebrand” their marketing approach to the public. It is apparent that many citizens have little faith in the effectiveness of the social services system and therefore avoid it at all costs. This is a problem because social services including psychological counseling are the public resources that aim to mitigate the risk of the cities citizens becoming psychologically ill and acting in irrational ways. The “rebranding” efforts could result In a number of people willing to try out the social services under the assumption that it is a changed system. 
+
+The government of Chicago needs to address the fact that extreme force used in a minority of cases between police and suspected criminals has increased the skepticism of citizens of Chicago. The police organization must both publically and privately develop new means of preventing extreme and unnecessary police force in order to restore the trust between the citizens of Chicago and the police. In 2015 Illinois state government passed legislature that aimed to rebuild the trust between the public and the police force. Once item on the agenda was to have police wear body cameras in an effort to audit police behavior and hold their public servants to a high level of integrity. It may be too early to assess if this has proved effective, but it is an excellent initiative. Chicago government should continue to develop new policy that holds potential at restoring the trust between the public and the police force. 
+
+Some teens may be motivated to join gangs due to a promised financial incentive. That is to say that they expect to be able to earn money, which may be an opportunity that they have never had. It may be a worthy initiative to introduce alternative educational resources to communities which teach methods of earning money online. For example, there are tasks which require little to no skill besides being able to read and click buttons in a certain order. This is achievable by anyone. If this sort of programming proves to be promising it could be used as a bargaining chip against traditional education. That is to say that the organizer of such a program could require that teens prove that they have been attending traditional school as a prerequisite for attending the alternate “money making” learning program. While it may initially seem far fetched, nowadays popular developments in culture can go “viral” overnight for seemingly no reason. It may be that alternative “money making” focused learning programs could be one such example of an idea well received by the youth of Chicago. 
+
+There have been recent developments in popular culture in the form of TV shows that glamorize the violence of Chicago. In this day in age, it is not realistic to expect parents to have the ability to censor what their teens are and are not watching on their cell phones. Therefore it is a complex problem to reduce the impact that popular media may have on the attitude of the youth of Chicago with respect to the use of violence and joining gangs. One possible approach would be to have reformed criminals come and speak to teens who have been identified as at “high risk” of being recruited into a gang. This is likely inappropriate for the general public however it may help an individual expand their perspective if a person who has lived a life which is being glamorized on TV explain to the youth that the negative aspects of this path are very real and permanently impactful. 
+
+Community Leadership is another factor that should be investigated and focused on in order to optimize influence on the youth. It may be the case that teens that do join gangs are searching for a leader to follow as they have lost faith in the traditionally proposed path in life. Although it is likely impossible for leaders of the community to allocate time to talk with each and every student , efforts can be made to remind these leadership roles that their influence can be used to prevent teens from joining gangs. It is up to the leader to develop an effective program that will be impactful, but it can be initiated by the Chicago government. 
+
+
+##Limitations/Uncertainties:
+
+The final accuracy rate is not as high as we’ve expected, which may result from the multiple classes for the response variable. While compared to the 20% accuracy rate with randomly guess, we suppose it does improve the prediction rate and works fine for this dataset. We’ve also tried to find the reason for this low accurate rate: since we only include several variables in the model, there may exist underfitting problems. Since most of the variables here are categorical with plenty of classes, we could hardly include them in the model as the encoding process is quite time-consuming. Meanwhile, we didn’t take full advantage of the geographical data shown as longitude and latitude which are quite informative as they also represent each areas’ population, education, income level and so on but these external data are hard to gather and re-organize. If we take all these factors into account, our model may be much better.
+
+##Areas of Future Investigation:
+
+First, there are some variables we did not use for most of our models because they have too many levels. We would like to find reasonable ways to group them and make add these variables to our model to see if we can increase the prediction accuracy.
+Second, our analysis shows that West of Chicago has the highest number of crimes, however, people typically think that South of Chicago is the most dangerous part. At first, we thought this discrepancy might due to we are only using a subset of the dataset, so we checked the full dataset, and the result still shows that West Chicago has the most crimes. We think that this is an interesting finding, if we have more time, we would like to make full use of the original dataset in order to further investigate the association between crimes and areas, and how the relationship changes through time.
+
+Third, we can also find some external data about Chicago’s neighborhoods, population distribution, education level, and income level, and combine this information with our crime datasets in order to investigate and determine significant factors for common crime types. By being able to identify high crime neighbourhoods, we can work on arriving at a solution by using a combination of external demographic, socio-economic, cultural and ethinic data to figure out if the violence is being perpetrated by violent gangs, or are these gangs forming on account of a negligent and an incapable government, or if poverty and poor education is indirectly leading to all these crimes, or if social media such as facebook youtube and mainstream cinema/tv shows are to blame for culturally influencing individuals to take up arms, because the recurring themes among tv shows, movies and rap songs these days seems to be about guns gangs gold and girls , all the while glorifying an unrealistic “hustling” lifestyle.
+
+Regarding the in-depth of the analysis, if are trying to reduce homicides, we can analyse data to look at places which are most homicides take place, locations where more homicides have taken place, who were the people who were the victims of homicide and then finally look at what kind of people were the perpetrators and what time of day/week were these crimes being committed. Based on this information we could then arrive at a practical solution. Analysis based on Day of week and hour of the day were left out as they are rather simple to achieve. 
+A future extension would be to integrate these plots and results into a website for publicity to increase citizen’s awareness of public safety. And we can build a season based predictive model with time series analysis techniques to predict when the crime would happen on a particular day.
+
+Under the hypothesis that increased violent crime is in part due to increased recruitment of youth into gangs, we can investigate further into this area. Anonymous surveys can be used in the public school system for identifying various statistics for the youths involvement and proximity with gangs. For example, students could be asked if they have ever been proposed to enter into a gang. Another possible question is how many people do you know in school who are part of a gang? These questions could serve as evidence when proposing to expand budgets and reform programs. Such as increasing the school psychological counselor resources. 
+
+## Reference:
+
+1. https://gist.githubusercontent.com/fawda123/7471137/raw/466c1474d0a505ff044412703516c34f1a4684a5/nnet_plot_update.r
+2. https://hackernoon.com/chicago-crime-mapping-magic-of-data-science-and-python-f2ecad74a597
+3. https://nycdatascience.com/blog/student-works/r-shiny/analysis-and-visualization-of-crime-in-chicago/
+4. https://hackernoon.com/chicago-crime-mapping-magic-of-data-science-and-python-f2ecad74a597
