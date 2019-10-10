@@ -1,0 +1,256 @@
+---
+title: "Big Bang"
+output: flexdashboard::flex_dashboard
+runtime: shiny
+---
+
+
+Introduction 
+===================================== 
+![](title.jpg)
+
+Column {data-width=1200, .tabset}
+-------------------------------------
+
+```{r}
+library(prettydoc)
+library(shiny)
+library(leaflet)
+library(data.table)
+library(Hmisc)
+library(scales)
+library(DT)
+library(lubridate)
+library(ggmap)
+library(ggplot2)
+library(randomForest)
+library(grid)
+library(nnet)
+library(glmnet)
+library(MASS)
+library(ipred)
+library(nnet)
+library(caret)
+library(rpart)
+library(xgboost)
+library(readr)
+library(stringr)
+library(caret)
+library(car)
+library(treemap)
+library(plotly)
+library(dplyr)
+
+load("../Data/data.RData")
+```
+
+```{r constant}
+area.name <- "Area"
+predictor.var <- c(type.name, fbi.rc.name, arrest.name, area.name, domestic.name, time.name, season.name)
+
+unique.count <- c(day.name, month.name, year.name)
+crimes[, eval(date.name) := as.Date(get(date.name), "%m/%d/%Y")]
+full.models.name <- c("Bagging", "Neural Networks", "Multinomial Logistic Regression", "Lasso Regression", "Ridge Regression", "Classification Trees", "Random Forest")
+models.name <- c("Bagging", "Neural Networks", "Multinomial Logistic Regression", "Classification Trees", "Random Forest")
+
+```
+
+Visualization 1
+===================================== 
+
+Column
+-------------------------------------
+
+
+```{r}
+inputPanel(
+dateRangeInput("date","Date Range:", start = "2003-01-01", end = "2018-12-31"),
+selectInput(inputId = "time", label = "Time:", 
+              choices = unique.time, selected = unique.time, multiple = TRUE),
+selectInput(inputId = "area", label = "Area:", 
+              choices = unique.area, selected = unique.area, multiple = TRUE),
+selectInput(inputId = "type", label = "Type:", 
+              choices = unique.type, selected = unique.type, multiple = TRUE),
+selectInput(inputId = "feature", label = "Feature:", 
+              choices = names(crimes)[c(6, 9:14, 18, 22:29)], selected = names(crimes)[28]),
+sliderInput(inputId = "top_num", label = "Number of types", 
+                min = 1, max = 10, value = 15, step = 1),
+checkboxInput(inputId = "sorted", label = "Sorted",  value=TRUE),
+checkboxInput(inputId = "line", label = "Time Series",  value=FALSE)
+)
+
+renderPlotly({
+   dat <- crimes[get(time.name) %in% input$time & get(area.name) %in% input$area &
+                 get(type.name) %in% input$type & get(date.name) - input$date[1] > 0 &
+                 get(date.name) - input$date[2] < 0 , ]
+    if(input$line == FALSE)
+   {
+   dat <- dat[, table(get(input$feature))] %>% as.data.frame
+   setorder(dat, by = -Freq)
+   dat <- dat[1:input$top_num, ]
+   if(input$sorted == TRUE) {dat$Var1 <- factor(dat$Var1, levels = dat$Var1)}
+   p <- ggplot(dat, aes(Var1, Freq, fill = Var1)) + geom_bar(stat = "identity") + 
+     xlab(input$feature) + ylab("Number") + theme_bw() + guides(fill=FALSE) +
+     theme(axis.text.x = element_text(size = 13),axis.text.y = element_text(size = 13),
+           axis.title.x = element_text(size = 16),axis.title.y = element_text(size = 16))+
+     scale_fill_discrete(breaks = dat$Var1)
+   }else
+   {
+   if(input$date[2] - input$date[1] >= 700){
+   dat <- dat[, .N, by = c(year.name, input$feature)]
+   names(dat)[2] <- "Feature"
+   }
+   if(input$date[2] - input$date[1] < 700 & input$date[2] - input$date[1] >= 50){
+   dat <- dat[, .N, by = c(year.name, month.name, input$feature)]
+   dat$Year <- paste(dat$Year, dat$Month, sep = ",")
+   names(dat)[3] <- "Feature"
+   } 
+   if(input$date[2] - input$date[1] < 50){
+   dat <- dat[, .N, by = c(date.name, input$feature)]
+   names(dat)[1:2] <- c("Year", "Feature")
+   }
+   ord <- dat[, max(N), by = Feature]
+   setorder(ord, -V1)
+   dat$Feature <- factor(dat$Feature, levels = ord$Feature)
+   selected <- ord[1:input$top_num, Feature]
+   dat <- dat[Feature %in% selected, ]
+   p <- ggplot(dat, aes(Year, N, group = Feature, color = Feature)) + geom_line() + 
+     scale_color_discrete(breaks = dat$Feature)
+   }
+   ggplotly(p)
+})
+
+```
+
+Visualization 2
+===================================== 
+
+Row{.tabset}
+-------------------------------------
+
+### Interactive Plot
+
+```{r}
+renderLeaflet({
+  newdat <- crimes[crimes$Latitude > 37, ]
+  newdat %>% group_by(Area, `Primary Type`) %>% summarise(number = n()) %>%   arrange(desc(number))
+  M_map<-leaflet() %>% 
+  addTiles() %>% 
+  setView(lng = -87.6298, 
+          lat = 41.8781, zoom = 6) %>%  
+  addMarkers(lat = newdat$Latitude,lng=newdat$Longitude,
+             clusterOptions = markerClusterOptions(), popup=newdat$`Primary Type`) 
+})
+```
+
+### Tree Map
+```{r}
+newdat <- crimes[crimes$Latitude > 37, ]
+new <- newdat %>% group_by(Area, `Primary Type`) %>% summarise(number = n()) %>% arrange(desc(number))
+treemap(new,index = c('Area','Primary Type'), vSize = 'number', title = "Tree Map of Crime Types Among Area", fontsize.title = 20)
+```
+
+### Map
+
+```{r}
+inputPanel(
+selectInput(inputId = "input1", label = "Variables 1:", 
+              choices = predictor.var, selected = type.name),
+selectInput(inputId = "input2", label = "Variables 2:", 
+              choices = predictor.var, selected = fbi.rc.name),
+sliderInput(inputId = "point.size", 
+               label = "Point Size", min = 3, max = 5.5, 
+               value = 1, step = 0.5),
+sliderInput(inputId = "map.zoom", 
+               label = "Map Zoom", min = 11, max = 14, 
+               value = 1, step = 1)
+)
+
+
+
+renderPlot({
+  register_google(key = "AIzaSyAl1mmsi1rBaPuPGqZYSlPu2TLqvuWfuYk", write = TRUE)
+chicago <- get_map(location = "chicago", maptype = "terrain", source = "google", 
+                   zoom = input$map.zoom)
+
+m <- ggmap(chicago)
+
+m +
+geom_point(aes(x = Longitude, y = Latitude, colour = get(input$input1), shape = get(input$input2)), size = input$point.size, data = crimes[sample(1:nrow(crimes), 3000)], alpha=0.5) + labs(title="Map in Chicago") 
+})
+
+```
+
+
+
+Models  {data-icon="fa-signal"}
+===================================== 
+
+Column{data-width=800, .tabset}
+-------------------------------------
+
+### Predicting Crime Type
+
+```{r models_input}
+inputPanel(
+  selectInput(inputId="type.mod", label = "Model", choices = models.name, selected = models.name[3], multiple = FALSE),
+  selectInput(inputId="arrest.mod", label = "Arrest", choices = unique.arrest, selected = unique.arrest[1], multiple = FALSE),
+  selectInput(inputId="domestic.mod", label = "Domestic", choices = unique.domestic, selected = unique.domestic[1], multiple = FALSE),
+  selectInput(inputId="season.mod", label = "Season", choices = unique.season, selected = unique.season[1], multiple = FALSE),
+  selectInput(inputId="location.mod", label = "Location", choices = unique.location, selected = unique.location[1], multiple = FALSE),
+  selectInput(inputId="time.mod", label = "Time", choices = unique.time, selected = unique.time[1], multiple = FALSE),
+  selectInput(inputId="fbi.mod", label = "Crime Severity", choices = unique.fbi, selected = unique.fbi[1], multiple = FALSE),
+  selectInput(inputId="area.mod", label = "Area", choices = unique.area, selected = unique.area[1], multiple = FALSE)
+)
+```
+
+```{r models_output}
+renderDataTable({
+  # Split data into training and test sets by years
+  t1 <- crimes[get(year.name) <= 2012, ]
+  t2 <- crimes[get(year.name) > 2012,]
+  newx <- data.table(Arrest = as.logical(input$arrest.mod))
+  newx[, eval(domestic.name) := as.logical(input$domestic.mod)]
+  newx[, eval(season.name) := input$season.mod]
+  newx[,eval(location.group.name) := input$location.mod]
+  newx[,eval(time.name) := input$time.mod]
+  newx[,eval(fbi.rc.name) := input$fbi.mod]
+  newx[, eval(area.name) := input$area.mod]
+
+  if(input$type.mod == "Bagging"){
+    pred <- predict(object = m2, newdata = newx, type = "class")
+  }
+  if(input$type.mod == "Neural Networks"){
+    pred <- predict(object = m1, newdata = newx, type = "class")
+  }
+  if(input$type.mod == "Multinomial Logistic Regression"){
+    pred <- predict(object = model.log, newdata = newx, type = "class")
+  }
+  if(input$type.mod == "Random Forest"){
+    newx <- newx[,eval(season.name):= as.factor(get(season.name))]
+    newx <- newx[,eval(time.name) := as.factor(get(time.name))]
+    newx <- newx[, "FBIRecode" := as.factor(get(fbi.rc.name))]
+    newx <- newx[, eval(fbi.rc.name) := NULL]
+    newx <- newx[, "LocationGrouped" := as.factor(get(location.group.name))]
+    newx <- newx[, eval(location.group.name) := NULL]
+    newx <- newx[, eval(area.name):= as.factor(get(area.name))]
+
+    newx$Season <- factor(newx$Season, levels = levels(t3$Season))
+    newx$LocationGrouped <- factor(newx$LocationGrouped, levels = levels(t3$LocationGrouped))
+    newx$Time <- factor(newx$Time, levels = levels(t3$Time))
+    newx$FBIRecode <- factor(newx$FBIRecode, levels = levels(t3$FBIRecode))
+    newx$Area <- factor(newx$Area, levels = levels(t3$Area)) 
+    
+    pred <- predict(object = model.rf, newdata = newx, type = "class")
+  }
+  else{
+    pred <- predict(object = model.ct, newdata = newx, type = "class")
+  }
+    
+  tab2 <- data.table(Model = input$type.mod, Crime.Type = pred)
+  datatable(tab2)
+ })
+
+```    
+
+
